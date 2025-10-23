@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>update securities for network</title>
+  <style>
+    :root{
+      --bg:#071017;
+      --panel:#0b1620;
+      --accent:#39ff14;
+      --muted:#7aa7b4;
+      --glass: rgba(255,255,255,0.03);
+    }
+    html,body{height:100%;margin:0;font-family: "Source Code Pro", ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;background:linear-gradient(180deg,#031018 0%, #071722 100%);color:#ddd}
+    .container{max-width:1100px;margin:28px auto;padding:20px;}
+    header{display:flex;align-items:center;gap:16px;margin-bottom:12px}
+    header h1{margin:0;font-size:20px;color:var(--accent);letter-spacing:0.6px}
+    header p{margin:0;color:var(--muted);font-size:13px}
+    .controls{display:flex;gap:10px;align-items:center;margin-top:10px}
+    button{background:var(--panel);border:1px solid rgba(255,255,255,0.04);color:var(--accent);padding:10px 14px;border-radius:8px;cursor:pointer;font-weight:700}
+    button.secondary{color:#fff;background:transparent;border:1px solid rgba(255,255,255,0.06)}
+    button:disabled{opacity:0.45;cursor:not-allowed}
+    .statusbar{margin-top:14px;display:flex;align-items:center;gap:16px;font-size:13px;color:var(--muted)}
+    .terminal{
+      margin-top:18px;
+      background:#000;
+      border-radius:8px;
+      padding:18px;
+      min-height:420px;
+      max-height:62vh;
+      overflow:auto;
+      box-shadow: 0 6px 30px rgba(0,0,0,0.6);
+      border: 1px solid rgba(255,255,255,0.03);
+    }
+    .line{font-family:monospace;color:var(--accent);white-space:pre-wrap;font-size:13px;line-height:1.4}
+    .line.dim{color:var(--muted)}
+    .progress-wrap{flex:1;display:flex;align-items:center;gap:10px}
+    .progress{height:10px;background:var(--glass);border-radius:6px;overflow:hidden;flex:1}
+    .progress > i{display:block;height:100%;width:0%;background:linear-gradient(90deg, rgba(57,255,20,0.15), rgba(57,255,20,0.25));transition:width 0.3s}
+    .counter{min-width:170px;text-align:right;color:var(--muted);font-size:13px}
+    .small{font-size:12px;color:var(--muted)}
+    .tag{background:rgba(57,255,20,0.06);padding:6px 8px;border-radius:6px;color:var(--accent);font-weight:700;font-size:12px}
+    footer{margin-top:12px;color:var(--muted);font-size:12px}
+    @media (max-width:620px){
+      .container{padding:12px}
+      header h1{font-size:16px}
+      .terminal{min-height:320px}
+    }
+  </style>
+</head>
+<body>
+  <div class="container" role="main">
+    <header>
+      <div>
+        <h1>update securities for network</h1>
+        <p class="small">Simulated scan — GeekTyper style terminal. Click <span class="tag">Run</span> to start.</p>
+      </div>
+    </header>
+
+    <div class="controls">
+      <button id="runBtn">Run</button>
+      <button id="stopBtn" class="secondary" disabled>Stop</button>
+      <div class="statusbar" style="margin-left:auto">
+        <div class="progress-wrap" style="width:420px">
+          <div class="progress" aria-hidden="true"><i id="progressBar"></i></div>
+        </div>
+        <div id="countdown" class="counter">Stopped</div>
+      </div>
+    </div>
+
+    <div id="terminal" class="terminal" aria-live="polite" aria-atomic="false"></div>
+
+    <footer>Tip: Browser will allow alarm sound because you initiated scan by clicking Run. Scan auto-stops after 3 hours.</footer>
+  </div>
+
+<script>
+/*
+  Behavior:
+   - Run -> starts a simulated scanning terminal for D = 3 hours (10800s)
+   - Every 120s: play alarm + append an error line.
+   - First 2-minute error will be "error3098 detected", subsequent ones random.
+   - Terminal produces continuous fake scan lines (typing effect).
+*/
+
+(function(){
+  const runBtn = document.getElementById('runBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const terminal = document.getElementById('terminal');
+  const progressBar = document.getElementById('progressBar');
+  const countdown = document.getElementById('countdown');
+
+  const SCAN_SECONDS = 3 * 60 * 60; // 3 hours -> 10800
+  const ERROR_INTERVAL = 120; // 2 minutes
+  const TYPING_RATE = 18; // ms per character when typing a line sim
+  const LINE_EMIT_RATE = 450; // ms between new fake lines (fast stream)
+  let scanStart = null;
+  let scanTimer = null;
+  let lineEmitter = null;
+  let errorTimer = null;
+  let remainingSeconds = 0;
+  let audioCtx = null;
+
+  // faux "scan lines" templates
+  const scanTemplates = [
+    "Initializing driver handshake...",
+    "Probing network interface [eth0]...",
+    "Handshake established with 192.168.{0}.{1}",
+    "Validating certificate chain...",
+    "Querying port {0} -> response 0x{1}",
+    "Decrypting payload segment {0} of {1}...",
+    "Allocating buffer 0x{0} size {1}KB...",
+    "Performing entropy analysis (pass {0})...",
+    "Checksum OK: {0}",
+    "Deep scan module 3 engaged.",
+    "Applying heuristic filter level {0}...",
+    "Monitoring packet anomaly score: {0}%",
+    "Injecting test packet -> TTL {0}",
+    "Scanning registry keys: HKEY_LOCAL_MACHINE\\System\\{0}",
+    "Triggering synthetic load test (phase {0})...",
+    "Background service 'netguard' reporting status: {0}"
+  ];
+
+  // small util functions
+  function rndInt(max){ return Math.floor(Math.random()*max); }
+  function pad(n,len=2){ return String(n).padStart(len,'0'); }
+
+  function format(template){
+    // replace {0}, {1} with small random values
+    return template.replace(/\{(\d+)\}/g,(m,g)=>{
+      if(g==0) return rndInt(255);
+      if(g==1) return rndInt(65535);
+      return rndInt(999);
+    });
+  }
+
+  function clearTerminal(){
+    terminal.innerHTML = '';
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+
+  function appendLine(text, cls){
+    const div = document.createElement('div');
+    div.className = 'line' + (cls?(' '+cls):'');
+    div.textContent = text;
+    terminal.appendChild(div);
+    terminal.scrollTop = terminal.scrollHeight;
+    return div;
+  }
+
+  function typeLine(text, cls){
+    const container = document.createElement('div');
+    container.className = 'line dim';
+    terminal.appendChild(container);
+    let i=0;
+    function step(){
+      container.textContent = text.slice(0,i+1);
+      terminal.scrollTop = terminal.scrollHeight;
+      i++;
+      if(i < text.length){
+        setTimeout(step, TYPING_RATE + Math.random()*TYPING_RATE);
+      } else {
+        if(cls) container.className = 'line ' + cls;
+        else container.className = 'line';
+      }
+    }
+    step();
+  }
+
+  function playAlarm(){
+    // Web Audio beep sequence
+    try{
+      if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const now = audioCtx.currentTime;
+      // two quick beeps
+      const t1 = 0.0;
+      const dur = 0.18;
+      const gap = 0.08;
+      [0, 1].forEach((i)=>{
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'sine';
+        o.frequency.value = i===0 ? 880 : 660;
+        g.gain.value = 0.0001;
+        o.connect(g);
+        g.connect(audioCtx.destination);
+        o.start(now + t1 + i*(dur+gap));
+        g.gain.linearRampToValueAtTime(0.25, now + t1 + i*(dur+gap) + 0.005);
+        g.gain.linearRampToValueAtTime(0.0001, now + t1 + i*(dur+gap) + dur);
+        o.stop(now + t1 + i*(dur+gap) + dur + 0.02);
+      });
+    }catch(e){
+      console.warn("Audio failed:", e);
+    }
+  }
+
+  function secondsToHMS(s){
+    const h = Math.floor(s/3600);
+    const m = Math.floor((s%3600)/60);
+    const sec = Math.floor(s%60);
+    return `${pad(h)}:${pad(m)}:${pad(sec)}`;
+  }
+
+  function updateProgress(){
+    if(!scanStart) return;
+    const elapsed = Math.floor((Date.now()-scanStart)/1000);
+    const clamped = Math.min(elapsed, SCAN_SECONDS);
+    const pct = Math.round((clamped/SCAN_SECONDS)*100);
+    progressBar.style.width = pct + '%';
+    remainingSeconds = Math.max(0, SCAN_SECONDS - clamped);
+    countdown.textContent = `Time left: ${secondsToHMS(remainingSeconds)} | ${pct}%`;
+    if(elapsed >= SCAN_SECONDS){
+      finishScan();
+    }
+  }
+
+  function startScan(){
+    stopScan(); // ensure clean
+    scanStart = Date.now();
+    clearTerminal();
+    appendLine("[SYS] Starting scan sequence...");
+    appendLine("[SYS] Mode: update securities for network");
+    let startupLines = [
+      "Loading kernel modules...",
+      "Binding to network adapter...",
+      "Spawning scanner threads x12...",
+      "Initializing deep-inspect module...",
+      "Performing signature sync..."
+    ];
+    // type startup lines
+    (function chain(i){
+      if(i >= startupLines.length) {
+        appendLine("[SYS] Launching live scan stream...\n");
+        // begin continuous fake lines
+        lineEmitter = setInterval(()=> {
+          const tmpl = scanTemplates[rndInt(scanTemplates.length)];
+          typeLine("> " + format(tmpl));
+        }, LINE_EMIT_RATE);
+        // schedule error timer: first error at ERROR_INTERVAL
+        let count = 0;
+        errorTimer = setInterval(()=> {
+          count++;
+          playAlarm();
+          if(count === 1){
+            appendLine("[ALARM] error3098 detected", "dim");
+            appendLine("[ALERT] Triggering forensic dump...");
+          } else {
+            const code = "error" + (1000 + Math.floor(Math.random()*9000));
+            appendLine(`[ALARM] ${code} detected`, "dim");
+            appendLine(`[ALERT] Handling ${code} -> launching mitigation subroutine`);
+          }
+        }, ERROR_INTERVAL * 1000);
+
+        // update progress every second
+        scanTimer = setInterval(updateProgress, 1000);
+        updateProgress();
+        stopBtn.disabled = false;
+        runBtn.disabled = true;
+      } else {
+        typeLine(startupLines[i]);
+        setTimeout(()=> chain(i+1), 600 + Math.random()*300);
+      }
+    })(0);
+  }
+
+  function finishScan(){
+    // called when 3 hours elapsed
+    appendLine("\n[SYS] Scan duration reached 3 hours. Stopping scan.");
+    appendLine("[SYS] Finalizing logs and saving report...");
+    playAlarm();
+    stopScan(true);
+  }
+
+  function stopScan(isAuto=false){
+    if(lineEmitter){ clearInterval(lineEmitter); lineEmitter = null; }
+    if(errorTimer){ clearInterval(errorTimer); errorTimer = null; }
+    if(scanTimer){ clearInterval(scanTimer); scanTimer = null; }
+    if(scanStart){
+      if(!isAuto) appendLine("\n[SYS] Scan manually stopped by user.");
+      scanStart = null;
+    }
+    progressBar.style.width = '0%';
+    countdown.textContent = 'Stopped';
+    stopBtn.disabled = true;
+    runBtn.disabled = false;
+  }
+
+
+  // Wire buttons
+  runBtn.addEventListener('click', (e)=>{
+    // resume or start new audio context user gesture
+    if(!audioCtx){
+      try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); audioCtx.suspend(); audioCtx.resume(); }catch(e){}
+    }
+    startScan();
+  });
+
+  stopBtn.addEventListener('click', ()=>{
+    stopScan();
+  });
+
+  // nice keyboard shortcuts: R to run, S to stop
+  document.addEventListener('keydown',(e)=>{
+    if(e.key === 'r' || e.key === 'R'){ if(!runBtn.disabled) runBtn.click(); }
+    if(e.key === 's' || e.key === 'S'){ if(!stopBtn.disabled) stopBtn.click(); }
+  });
+
+  // initial small welcome
+  appendLine("Welcome. Terminal ready.");
+  appendLine("Click 'Run' to start simulated security scan.");
+})();
+</script>
+</body>
+</html>
